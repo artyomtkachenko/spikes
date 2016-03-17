@@ -23,7 +23,7 @@ func init() {
 
 func getRandNumber(n int) int {
 	res := make(map[int]int) //will contain N numbers
-	for i := 0; i < 25000000; i++ {
+	for i := 0; i < 2500000; i++ {
 		res[rand.Intn(n)]++
 	}
 	max := 0
@@ -102,9 +102,9 @@ func main() {
 	fmt.Printf("This machine has %d CPU cores. \n", cores)
 	runtime.GOMAXPROCS(cores)
 
-	ticketsToGenerate := 20
-	minorNumber := 6
-	majorNumber := 36
+	ticketsToGenerate := 12
+	minorNumber := 7
+	majorNumber := 45
 
 	tasksPerCore := ticketsToGenerate / cores
 	queue := make(chan map[string]string, ticketsToGenerate)
