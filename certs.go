@@ -3,10 +3,9 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
-	"strings"
-	"time"
 )
 
 type position struct {
@@ -17,95 +16,62 @@ type position struct {
 type certMeta struct {
 	name     string
 	position int
-	step     int
 }
 
-func knownRoots(cert string) bool {
-	roots := []string{
-		"GeoTrust Global CA",
+func reverse(numbers []certMeta) {
+	for i, j := 0, len(numbers)-1; i < j; i, j = i+1, j-1 {
+		numbers[i], numbers[j] = numbers[j], numbers[i]
 	}
-	for _, c := range roots {
-		if cert == c {
-			return true
+}
+
+func verifyPositions(nativeChain []certMeta) {
+	reverse(nativeChain)
+	for i, item := range nativeChain {
+		if i == 0 || i == 0 {
+			if item.position != 0 {
+				fmt.Printf("Wrong position found for %s, expected position in the chain: %d, actual position in the chain: %d\n", item.name, i, item.position)
+			}
+		} else {
+			if item.position != (i - 1) {
+				fmt.Printf("Wrong position found for %s, expected position in the chain: %d, actual position in the chain: %d\n", item.name, i-1, item.position)
+			}
 		}
 	}
-	return false
+
 }
 
-func getActualPosition(chain []*x509.Certificate, issuer string) int {
-	for i, item := range chain {
-		if item.Subject.CommonName == issuer {
-			return i
+func findRoot(chain []*x509.Certificate) (error, string) {
+	knownRoots := map[string]string{
+		"GeoTrust Global CA":                     "google",
+		"NBN Co Root CA":                         "nbn",
+		"DigiCert SHA2 High Assurance Server CA": "facebook",
+	}
+	for _, item := range chain {
+		_, inIssuer := knownRoots[item.Issuer.CommonName]
+		_, inSubject := knownRoots[item.Subject.CommonName]
+		if inIssuer {
+			return nil, item.Issuer.CommonName
+		}
+		if inSubject {
+			return nil, item.Subject.CommonName
 		}
 	}
-	return -1
+	return errors.New("NO ROOT certificate found in the chain"), ""
 }
 
-func verifyChain2(chain []*x509.Certificate, issuer string, result *[]certMeta, step int) {
+func buildNativeChain(chain []*x509.Certificate, issuer string, result *[]certMeta, step int) {
 	next := "none"
 	if step == 0 {
-		*result = append(*result, certMeta{chain[0].Subject.CommonName, len(*result), step})
+		*result = append(*result, certMeta{chain[0].Subject.CommonName, 0})
 	} else {
 		for i, item := range chain {
 			if item.Issuer.CommonName == issuer {
-				*result = append(*result, certMeta{issuer, i, step})
+				*result = append(*result, certMeta{issuer, i})
 				next = item.Subject.CommonName
 			}
 		}
-		verifyChain2(chain, next, result, step-1)
+		buildNativeChain(chain, next, result, step-1)
 	}
-}
-
-// func verifyChain3(chain []*x509.Certificate, issuer string, result *[]certMeta, step int) {
-// 	if len(chain) == 1 || step == 0 {
-// 		*result = append(*result, certMeta{chain[0].Subject.CommonName, len(*result)})
-// 	} else {
-// 		if chain[step-1].Issuer.CommonName == issuer {
-// 			fmt.Printf("Step: %d, Size: %d\n", step, len(chain))
-// 			*result = append(*result, certMeta{issuer, step + len(*result)}) //WRONG
-// 			chain[step-1].Issuer.CommonName = "none"                         // Found it, we do not want to check it again
-// 			verifyChain2(chain, chain[step-1].Subject.CommonName, result, step-1)
-// 		} else {
-// 			fmt.Printf("STEP: %d, SIZE: %d\n", step, len(chain))
-// 			verifyChain2(chain, issuer, result, step-1)
-// 		}
-// 	}
-// }
-
-func verifyChain(chain []*x509.Certificate) bool {
-
-	var nativeChain = make(map[string]string)
-	var positions = make(map[string]*position)
-
-	rootFound := false
-	for i, item := range chain {
-		issuer := item.Issuer.CommonName
-		subject := item.Subject.CommonName
-		positions[subject] = &position{0, i}
-		nativeChain[subject] = issuer
-		if strings.Contains(issuer, "Root") || strings.Contains(issuer, "GeoTrust Global CA") || issuer == "" {
-			rootFound = true
-			positions[issuer] = &position{i + 1, i + 1}
-			positions[subject].expected = len(chain) - 1
-		}
-	}
-
-	for subject, issuer := range nativeChain {
-		if issuer != "" {
-			issuerExpectedPosition := positions[nativeChain[subject]].expected
-			positions[subject].expected = issuerExpectedPosition - 1
-		}
-	}
-
-	// for k, v := range positions {
-	// 	fmt.Printf("%s %+v\n", k, *v)
-	// }
-	// move it upper
-	if !rootFound {
-		fmt.Println("NO ROOT cerificate detected in the chain")
-		return false
-	}
-	return true
 }
 
 func main() {
@@ -117,16 +83,20 @@ func main() {
 	if err != nil {
 		panic("failed to connect: " + err.Error())
 	}
-	var result []certMeta
+	var nativeChain []certMeta
 	chain := conn.ConnectionState().PeerCertificates
-	verifyChain2(chain, "GeoTrust Global CA", &result, len(chain))
-	/* verifyChain2(chain, "NBN Co Root CA", &result, len(chain)) */
-	/* verifyChain2(chain, "DigiCert SHA2 High Assurance Server CA", &result, len(chain)) */
-	fmt.Printf("%+v\n", result)
-	for _, cert := range chain {
-		fmt.Printf("Certificate: %s, Issued by: %s, Expires at:  %s, Days left: %d\n",
-			cert.Subject.CommonName, cert.Issuer.CommonName, cert.NotAfter, cert.NotAfter.Sub(time.Now())/time.Hour/24)
+	err, root := findRoot(chain)
+	if err != nil {
+		fmt.Println(err)
 	}
+	buildNativeChain(chain, root, &nativeChain, len(chain))
+
+	verifyPositions(nativeChain)
+	fmt.Printf("%+v\n", nativeChain)
+	// for _, cert := range chain {
+	// 	fmt.Printf("Certificate: %s, Issued by: %s, Expires at:  %s, Days left: %d\n",
+	// 		cert.Subject.CommonName, cert.Issuer.CommonName, cert.NotAfter, cert.NotAfter.Sub(time.Now())/time.Hour/24)
+	// }
 
 	conn.Close()
 }
