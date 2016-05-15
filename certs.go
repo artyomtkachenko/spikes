@@ -9,42 +9,101 @@ import (
 	"time"
 )
 
+type position struct {
+	expected int
+	actual   int
+}
+
+type certMeta struct {
+	name     string
+	position int
+	step     int
+}
+
+func knownRoots(cert string) bool {
+	roots := []string{
+		"GeoTrust Global CA",
+	}
+	for _, c := range roots {
+		if cert == c {
+			return true
+		}
+	}
+	return false
+}
+
+func getActualPosition(chain []*x509.Certificate, issuer string) int {
+	for i, item := range chain {
+		if item.Subject.CommonName == issuer {
+			return i
+		}
+	}
+	return -1
+}
+
+func verifyChain2(chain []*x509.Certificate, issuer string, result *[]certMeta, step int) {
+	next := "none"
+	if step == 0 {
+		*result = append(*result, certMeta{chain[0].Subject.CommonName, len(*result), step})
+	} else {
+		for i, item := range chain {
+			if item.Issuer.CommonName == issuer {
+				*result = append(*result, certMeta{issuer, i, step})
+				next = item.Subject.CommonName
+			}
+		}
+		verifyChain2(chain, next, result, step-1)
+	}
+}
+
+// func verifyChain3(chain []*x509.Certificate, issuer string, result *[]certMeta, step int) {
+// 	if len(chain) == 1 || step == 0 {
+// 		*result = append(*result, certMeta{chain[0].Subject.CommonName, len(*result)})
+// 	} else {
+// 		if chain[step-1].Issuer.CommonName == issuer {
+// 			fmt.Printf("Step: %d, Size: %d\n", step, len(chain))
+// 			*result = append(*result, certMeta{issuer, step + len(*result)}) //WRONG
+// 			chain[step-1].Issuer.CommonName = "none"                         // Found it, we do not want to check it again
+// 			verifyChain2(chain, chain[step-1].Subject.CommonName, result, step-1)
+// 		} else {
+// 			fmt.Printf("STEP: %d, SIZE: %d\n", step, len(chain))
+// 			verifyChain2(chain, issuer, result, step-1)
+// 		}
+// 	}
+// }
+
 func verifyChain(chain []*x509.Certificate) bool {
 
-	var result = make(map[string]bool)
+	var nativeChain = make(map[string]string)
+	var positions = make(map[string]*position)
+
 	rootFound := false
-	rootPosition := 0
-	for i, cert := range chain {
-		issuer := cert.Issuer.CommonName
-		subject := cert.Subject.CommonName
-		if strings.Contains(issuer, "Root") {
-			rootPosition = i
+	for i, item := range chain {
+		issuer := item.Issuer.CommonName
+		subject := item.Subject.CommonName
+		positions[subject] = &position{0, i}
+		nativeChain[subject] = issuer
+		if strings.Contains(issuer, "Root") || strings.Contains(issuer, "GeoTrust Global CA") || issuer == "" {
 			rootFound = true
-		}
-		// Do not really like this logic. TODO FIXME
-		for j, cert2 := range chain {
-			if j == i {
-				continue //We do not want to verify the same entry from the outer loop
-			}
-			if subject == cert2.Issuer.CommonName { // We found a record in the chain
-				result[subject] = true
-			}
+			positions[issuer] = &position{i + 1, i + 1}
+			positions[subject].expected = len(chain) - 1
 		}
 	}
 
-	for _, v := range result {
-		if !v {
-			return false
+	for subject, issuer := range nativeChain {
+		if issuer != "" {
+			issuerExpectedPosition := positions[nativeChain[subject]].expected
+			positions[subject].expected = issuerExpectedPosition - 1
 		}
 	}
+
+	// for k, v := range positions {
+	// 	fmt.Printf("%s %+v\n", k, *v)
+	// }
+	// move it upper
 	if !rootFound {
 		fmt.Println("NO ROOT cerificate detected in the chain")
 		return false
-	}
-
-	// It is a bit Ugly, as it does not check position for NON ROOT certs
-	if rootPosition != len(chain)-1 {
-		fmt.Println("Wrong ROOT cerificate position detected")
 	}
 	return true
 }
@@ -58,13 +117,15 @@ func main() {
 	if err != nil {
 		panic("failed to connect: " + err.Error())
 	}
-
+	var result []certMeta
 	chain := conn.ConnectionState().PeerCertificates
-	if !verifyChain(chain) {
-		for _, cert := range chain {
-			fmt.Printf("Certificate: %s, Issued by: %s, Expires at:  %s, Days left: %d\n",
-				cert.Subject.CommonName, cert.Issuer.CommonName, cert.NotAfter, cert.NotAfter.Sub(time.Now())/time.Hour/24)
-		}
+	verifyChain2(chain, "GeoTrust Global CA", &result, len(chain))
+	/* verifyChain2(chain, "NBN Co Root CA", &result, len(chain)) */
+	/* verifyChain2(chain, "DigiCert SHA2 High Assurance Server CA", &result, len(chain)) */
+	fmt.Printf("%+v\n", result)
+	for _, cert := range chain {
+		fmt.Printf("Certificate: %s, Issued by: %s, Expires at:  %s, Days left: %d\n",
+			cert.Subject.CommonName, cert.Issuer.CommonName, cert.NotAfter, cert.NotAfter.Sub(time.Now())/time.Hour/24)
 	}
 
 	conn.Close()
